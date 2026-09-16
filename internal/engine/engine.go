@@ -150,6 +150,13 @@ func (e *Engine) Feed(raw string, arrival time.Time) Line {
 	return ln
 }
 
+// Finish flushes the final partial second at end of stream.
+func (e *Engine) Finish() []detect.Anomaly {
+	a := detect.Filter(e.Det.Finish())
+	e.record(a)
+	return a
+}
+
 // Tick advances the detector clock without new input.
 func (e *Engine) Tick(now time.Time) []detect.Anomaly {
 	a := detect.Filter(e.Det.Tick(now))

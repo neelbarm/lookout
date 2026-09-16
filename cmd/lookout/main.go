@@ -126,10 +126,10 @@ func main() {
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	var o opts
 	registerFlags(fs, &o)
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseArgs(fs, args)
+	if err != nil {
 		os.Exit(2)
 	}
-	rest := fs.Args()
 
 	if o.noColor {
 		os.Setenv("NO_COLOR", "1")
@@ -144,7 +144,6 @@ func main() {
 		cancel()
 	}()
 
-	var err error
 	switch cmd {
 	case "stream":
 		err = runStream(ctx, &o, engine.ReaderSource(ctx, os.Stdin), "stdin")
@@ -174,6 +173,24 @@ func main() {
 	}
 	if err != nil {
 		fatal(err.Error())
+	}
+}
+
+// parseArgs parses flags that appear anywhere on the command line and returns
+// the operands. Go's flag package stops at the first non-flag argument, which
+// would silently ignore "lookout replay app.log --speed 50".
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var operands []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			return operands, nil
+		}
+		operands = append(operands, args[0])
+		args = args[1:]
 	}
 }
 
@@ -238,11 +255,9 @@ loop:
 		}
 	}
 
-	// Close the final partial second so the last bucket is evaluated.
-	if _, last := eng.Span(); !last.IsZero() {
-		eng.Tick(last.Truncate(time.Second).Add(time.Second))
-		emit(eng.Drain())
-	}
+	// Flush the final partial second.
+	eng.Finish()
+	emit(eng.Drain())
 	out.Flush()
 	if !o.quiet {
 		tui.Summary(os.Stderr, eng, tui.IsTTY(os.Stderr))
@@ -271,9 +286,7 @@ func runReport(ctx context.Context, o *opts, rest []string) error {
 			return err
 		}
 	}
-	if _, last := eng.Span(); !last.IsZero() {
-		eng.Tick(last.Truncate(time.Second).Add(time.Second))
-	}
+	eng.Finish()
 	w := bufio.NewWriter(os.Stdout)
 	defer w.Flush()
 	tui.Report(w, eng, tui.ReportOptions{

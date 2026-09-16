@@ -269,6 +269,9 @@ type Detector struct {
 	lines     int
 	anomalies int
 	warm      bool
+	// closing is set while the final partial second is being flushed, so that
+	// "the stream ended" is never reported as "this template stopped".
+	closing bool
 
 	errCur  int
 	errHist [histLen]float64
@@ -334,6 +337,18 @@ func (d *Detector) Tick(now time.Time) []Anomaly {
 		return nil
 	}
 	return d.advance(now)
+}
+
+// Finish flushes the last partial second at end of stream. Downward rate
+// anomalies and silence are suppressed during the flush: a stream that ended is
+// not a template that went quiet.
+func (d *Detector) Finish() []Anomaly {
+	if !d.startSet {
+		return nil
+	}
+	d.closing = true
+	defer func() { d.closing = false }()
+	return d.advance(d.now.Truncate(time.Second).Add(time.Second))
 }
 
 // Observe feeds one classified line and returns any anomalies it triggered.
@@ -469,7 +484,7 @@ func (d *Detector) closeSecond(sec int64) []Anomaly {
 			sd := math.Max(math.Sqrt(st.varr), math.Sqrt(st.mean))
 			if sd > 0.3 && st.mean >= 2.0 {
 				z := (x - st.mean) / sd
-				if math.Abs(z) >= d.cfg.Z && (x >= st.mean+2 || x <= st.mean-2) {
+				if math.Abs(z) >= d.cfg.Z && (x >= st.mean+2 || x <= st.mean-2) && !(d.closing && z < 0) {
 					dir, cmp := "spiked", "above"
 					if z < 0 {
 						dir, cmp = "dropped", "below"
@@ -495,7 +510,7 @@ func (d *Detector) closeSecond(sec int64) []Anomaly {
 		// Silence: a template that used to be busy and has gone quiet.
 		// Silence only means something while the rest of the stream is still
 		// flowing; if everything stopped, that is not this template's story.
-		streamAlive := sec-d.lastLineSec < int64(d.cfg.SilenceSecs)
+		streamAlive := sec-d.lastLineSec < int64(d.cfg.SilenceSecs) && !d.closing
 		if d.warm && streamAlive && !st.silenced && st.peakMean >= 1.0 &&
 			st.activeSecs >= d.cfg.MinActiveSecs && st.secs >= d.cfg.MinSeconds &&
 			sec-st.lastSec >= int64(d.cfg.SilenceSecs) {
