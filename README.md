@@ -6,7 +6,7 @@
 tail -f app.log | lookout
 ```
 
-![lookout](docs/demo.gif)
+![lookout](docs/demo.png)
 
 ## Why
 
@@ -22,7 +22,7 @@ why. It is a single static binary with no dependencies outside the Go standard l
 ## 60-second quickstart
 
 ```bash
-git clone https://github.com/neelbarmecha/lookout && cd lookout
+git clone https://github.com/neelbarm/lookout && cd lookout
 make build
 
 # watch anything
