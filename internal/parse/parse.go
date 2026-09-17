@@ -10,7 +10,83 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// needsClean reports whether s carries anything that must not reach a frame.
+func needsClean(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		// 0xc2 is the lead byte of U+0080..U+00BF, which covers the C1 controls.
+		if c < 0x20 || c == 0x7f || c == 0xc2 {
+			return true
+		}
+	}
+	return !utf8.ValidString(s)
+}
+
+// escapeLen returns the byte length of the escape sequence starting at s[0],
+// which must be ESC.
+func escapeLen(s string) int {
+	if len(s) < 2 {
+		return len(s)
+	}
+	switch s[1] {
+	case '[': // CSI: parameter bytes then a final byte in 0x40..0x7e
+		for i := 2; i < len(s); i++ {
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				return i + 1
+			}
+		}
+		return len(s)
+	case ']', 'P', 'X', '^', '_': // OSC/DCS/SOS/PM/APC: terminated by BEL or ST
+		for i := 2; i < len(s); i++ {
+			if s[i] == 0x07 {
+				return i + 1
+			}
+			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+				return i + 2
+			}
+		}
+		return len(s)
+	default:
+		return 2
+	}
+}
+
+// Clean strips the escape sequences and control characters a log line can
+// carry, and replaces invalid UTF-8. The renderer writes message text straight
+// into the frame, so without this a line containing "\x1b[2J" clears the
+// operator's screen and one carrying a cursor-position sequence repaints the
+// dashboard — anything that can write a log line could drive the terminal.
+// Tabs become spaces because a tab breaks column alignment; word splitting is
+// unaffected, since strings.Fields already treats it as a separator.
+func Clean(s string) string {
+	if !needsClean(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			i += escapeLen(s[i:])
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(s[i:])
+		i += n
+		switch {
+		case r == utf8.RuneError && n == 1:
+			b.WriteRune(utf8.RuneError) // an invalid byte
+		case r == '\t':
+			b.WriteByte(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			// a control character: drop it
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // Record is a single parsed log line.
 type Record struct {
@@ -106,7 +182,7 @@ func parseISO(s string) (time.Time, bool) {
 
 // Parse parses one line. arrival is used when the line carries no timestamp.
 func Parse(line string, arrival time.Time) Record {
-	line = strings.TrimRight(line, "\r\n")
+	line = Clean(strings.TrimRight(line, "\r\n"))
 	r := Record{Raw: line, Time: arrival, Message: line}
 
 	trimmed := strings.TrimLeft(line, " \t")
@@ -344,6 +420,11 @@ func splitLogfmt(s string) []string {
 }
 
 func finish(r Record) Record {
+	// A JSON line can smuggle an escape sequence past the raw-line clean as
+	// "", so the decoded message is cleaned too. For every other format
+	// the message is a slice of the already-clean raw line and this is a
+	// no-op scan.
+	r.Message = Clean(r.Message)
 	if r.Message == "" {
 		r.Message = r.Raw
 	}
