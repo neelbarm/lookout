@@ -6,6 +6,7 @@
 package drain
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -201,10 +202,17 @@ func hasDigit(s string) bool {
 }
 
 // bestMatch returns the most similar cluster in a leaf and its similarity.
+// Only clusters of the same token count are candidates: once the tree's
+// per-node child cap folds several token counts into one wildcard branch a
+// leaf can hold mixed lengths, and merging across lengths indexes past the end
+// of the shorter one.
 func bestMatch(cs []*Cluster, masked []string) (*Cluster, float64) {
 	var best *Cluster
 	bestSim := -1.0
 	for _, c := range cs {
+		if len(c.Tokens) != len(masked) {
+			continue
+		}
 		s := similarity(c.Tokens, masked)
 		if s > bestSim {
 			best, bestSim = c, s
@@ -231,8 +239,12 @@ func similarity(tmpl, toks []string) float64 {
 	return float64(same) / float64(len(tmpl))
 }
 
-// merge widens the template in place where the new line disagrees.
+// merge widens the template in place where the new line disagrees. Callers
+// must pass equal lengths; the guard keeps a future caller from panicking.
 func merge(tmpl, toks []string) {
+	if len(tmpl) != len(toks) {
+		return
+	}
 	for i := range tmpl {
 		if tmpl[i] != toks[i] {
 			tmpl[i] = Wildcard
@@ -350,19 +362,19 @@ func numeric(tok string) (float64, string, bool) {
 	}
 	switch unit {
 	case "":
-		return f, "", true
+		return finite(f, "")
 	case "ns":
-		return f / 1e6, "ms", true
+		return finite(f/1e6, "ms")
 	case "us", "\u00b5s":
-		return f / 1e3, "ms", true
+		return finite(f/1e3, "ms")
 	case "ms":
-		return f, "ms", true
+		return finite(f, "ms")
 	case "s":
-		return f * 1e3, "ms", true
+		return finite(f*1e3, "ms")
 	case "m":
-		return f * 60e3, "ms", true
+		return finite(f*60e3, "ms")
 	case "h":
-		return f * 3600e3, "ms", true
+		return finite(f*3600e3, "ms")
 	}
 	for j := 0; j < len(unit); j++ {
 		c := unit[j]
@@ -370,7 +382,18 @@ func numeric(tok string) (float64, string, bool) {
 			return 0, "", false
 		}
 	}
-	return f, unit, true
+	return finite(f, unit)
+}
+
+// finite rejects a value that overflowed while being scaled to milliseconds.
+// A 300-digit number with an "h" suffix parses fine and then becomes +Inf,
+// which poisons the running statistics and makes encoding/json refuse the
+// anomaly \u2014 silently, because Encode writes nothing when it fails.
+func finite(v float64, unit string) (float64, string, bool) {
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return 0, "", false
+	}
+	return v, unit, true
 }
 
 var maskers = []struct {
