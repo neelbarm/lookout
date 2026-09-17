@@ -274,8 +274,12 @@ func Summary(w io.Writer, eng *engine.Engine, color bool) {
 	fmt.Fprintf(w, "  lines       %d\n", eng.Total())
 	fmt.Fprintf(w, "  templates   %d\n", len(eng.Miner.Clusters()))
 	fmt.Fprintf(w, "  anomalies   %d\n", eng.Det.Anomalies())
-	fmt.Fprintf(w, "  span        %s  (%s → %s)\n", HumanDur(last.Sub(first)),
-		first.Format(time.RFC3339), last.Format(time.RFC3339))
+	if first.IsZero() {
+		fmt.Fprintf(w, "  span        %s\n", "—")
+	} else {
+		fmt.Fprintf(w, "  span        %s  (%s → %s)\n", HumanDur(last.Sub(first)),
+			first.Format(time.RFC3339), last.Format(time.RFC3339))
+	}
 	counts := eng.ByKind()
 	for _, k := range []detect.Kind{detect.KindNovel, detect.KindSpike, detect.KindBurst, detect.KindParam, detect.KindSilence} {
 		fmt.Fprintf(w, "    %-18s %d\n", detect.KindLabel(k), counts[k])

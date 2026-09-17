@@ -198,6 +198,7 @@ func (a *App) key(b byte) bool {
 func (a *App) draw() {
 	a.frame++
 	if a.w < 40 || a.h < 10 {
+		a.drawTooSmall()
 		return
 	}
 	rows := a.render(a.w, a.h)
@@ -215,6 +216,18 @@ func (a *App) draw() {
 	a.term.Write(b.String())
 	a.term.Flush()
 	a.prev = rows
+}
+
+// drawTooSmall says why the dashboard is blank, instead of leaving the user
+// looking at an empty alternate screen with no way to tell what went wrong.
+func (a *App) drawTooSmall() {
+	msg := Truncate(fmt.Sprintf("terminal is %dx%d; lookout needs at least 40x10", a.w, a.h), a.w)
+	if len(a.prev) == 1 && a.prev[0] == msg {
+		return
+	}
+	a.term.Write("\x1b[2J\x1b[1;1H" + msg)
+	a.term.Flush()
+	a.prev = []string{msg}
 }
 
 func (a *App) render(w, h int) []string {
