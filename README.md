@@ -48,7 +48,8 @@ make demo-json   # the same incident through the JSON-lines path
 The generator scripts a real outage: a novel `connection pool exhausted` template
 appears, checkout latency rises 30x, the error rate bursts, the cache tier goes quiet,
 auth traffic triples as sessions re-authenticate, and then everything recovers. All five
-detectors fire, in the right order, within a second of t+40s:
+detectors fire, in the right order, within a second of t+40s. Abridged — the real
+`reason` strings carry a few more numbers, and the timestamps are whenever you run it:
 
 ```
 18:53:18 param    PARAM latency  latency=1.09s is 17x the median of 65ms and 5.0σ above it in log space
@@ -236,9 +237,14 @@ nginx/Apache common and combined logs, JSON lines with `level`/`msg`/`ts`, and l
 Anything else still works: the line becomes the message and arrival time becomes the
 timestamp.
 
+Escape sequences and control characters are stripped from every line before it is mined
+or rendered, and invalid UTF-8 is replaced. A log you are watching is untrusted input:
+without that, a line containing `ESC[2J` would clear your screen and a cursor-position
+sequence would repaint the dashboard. Tabs become spaces so columns stay aligned.
+
 ## Performance
 
-Roughly 55k lines/second single-threaded on an M-series Mac, constant memory (fixed-size
+Roughly 50k lines/second single-threaded on an M-series Mac, constant memory (fixed-size
 rings for recent lines and anomalies, bounded reservoirs per parameter). 444k lines of
 macOS unified-log output parse and score in about 11 seconds.
 
@@ -250,6 +256,8 @@ macOS unified-log output parse and score in about 11 seconds.
   leading edge, then adapt. That is the intended behaviour for an online detector, not a
   bug, but it means lookout tells you when something *changed*, not that it is still bad.
 - Very diverse streams (a whole OS log) legitimately produce thousands of templates.
+- A single line longer than 1 MB is truncated at that point and the rest of it discarded.
+  The stream carries on; nothing downstream sees the remainder.
 - No persistence: baselines live for the lifetime of the process.
 
 ## Development
