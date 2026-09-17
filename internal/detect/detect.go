@@ -468,7 +468,10 @@ func (d *Detector) advance(now time.Time) []Anomaly {
 
 func (d *Detector) closeSecond(sec int64) []Anomaly {
 	var out []Anomaly
-	at := time.Unix(sec, 0)
+	// Render in the stream's own zone. time.Unix is in local time, which made a
+	// report of a UTC log mix zones: line-derived anomalies carried the log's
+	// offset while spikes and silences carried the reader's.
+	at := time.Unix(sec, 0).In(d.now.Location())
 	a := d.cfg.Alpha
 
 	for _, id := range d.order {
