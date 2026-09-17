@@ -16,12 +16,54 @@ type Event struct {
 	At   time.Time
 }
 
-const scanBuf = 1 << 20
+// MaxLine bounds how much of a single line is retained. A longer line is
+// truncated and the rest discarded. bufio.Scanner cannot do this: it fails the
+// whole stream with "token too long", which used to abort a report and end a
+// live stream silently in the middle of a file.
+const MaxLine = 1 << 20
 
-func newScanner(r io.Reader) *bufio.Scanner {
-	s := bufio.NewScanner(r)
-	s.Buffer(make([]byte, 64*1024), scanBuf)
-	return s
+// lineReader reads newline-delimited lines of any length, truncating anything
+// past MaxLine so that one pathological line can neither exhaust memory nor
+// stop the stream.
+type lineReader struct {
+	rd  *bufio.Reader
+	buf []byte
+}
+
+func newLineReader(r io.Reader) *lineReader {
+	return &lineReader{rd: bufio.NewReaderSize(r, 64*1024)}
+}
+
+// appendCapped appends b, dropping whatever does not fit in MaxLine.
+func (l *lineReader) appendCapped(b []byte) {
+	if n := MaxLine - len(l.buf); n > 0 {
+		if len(b) > n {
+			b = b[:n]
+		}
+		l.buf = append(l.buf, b...)
+	}
+}
+
+// next returns the next line without its trailing newline. The error is
+// reported only once no more data is available.
+func (l *lineReader) next() (string, error) {
+	l.buf = l.buf[:0]
+	for {
+		chunk, err := l.rd.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			l.appendCapped(chunk)
+			continue
+		}
+		if err != nil {
+			if len(chunk) == 0 && len(l.buf) == 0 {
+				return "", err
+			}
+			l.appendCapped(chunk)
+			return string(l.buf), nil
+		}
+		l.appendCapped(chunk[:len(chunk)-1])
+		return string(l.buf), nil
+	}
 }
 
 // ReaderSource streams lines from r until EOF, then closes the channel.
@@ -29,10 +71,14 @@ func ReaderSource(ctx context.Context, r io.Reader) <-chan Event {
 	ch := make(chan Event, 1024)
 	go func() {
 		defer close(ch)
-		sc := newScanner(r)
-		for sc.Scan() {
+		lr := newLineReader(r)
+		for {
+			text, err := lr.next()
+			if err != nil {
+				return
+			}
 			select {
-			case ch <- Event{Text: sc.Text(), At: time.Now()}:
+			case ch <- Event{Text: text, At: time.Now()}:
 			case <-ctx.Done():
 				return
 			}
@@ -75,9 +121,20 @@ func TailSource(ctx context.Context, path string, fromStart bool) (<-chan Event,
 		for {
 			line, err := rd.ReadBytes('\n')
 			if len(line) > 0 {
-				pending = append(pending, line...)
-				if pending[len(pending)-1] == '\n' {
-					text := string(pending[:len(pending)-1])
+				complete := line[len(line)-1] == '\n'
+				if complete {
+					line = line[:len(line)-1]
+				}
+				// Cap the partial line the same way lineReader does, so a
+				// gigantic line in a followed file cannot grow without bound.
+				if n := MaxLine - len(pending); n > 0 {
+					if len(line) > n {
+						line = line[:n]
+					}
+					pending = append(pending, line...)
+				}
+				if complete {
+					text := string(pending)
 					pending = pending[:0]
 					select {
 					case ch <- Event{Text: text, At: time.Now()}:
@@ -132,11 +189,14 @@ func ReplaySource(ctx context.Context, path string, speed float64) (<-chan Event
 	go func() {
 		defer close(ch)
 		defer f.Close()
-		sc := newScanner(f)
+		lr := newLineReader(f)
 		var prev time.Time
 		havePrev := false
-		for sc.Scan() {
-			text := sc.Text()
+		for {
+			text, rerr := lr.next()
+			if rerr != nil {
+				return
+			}
 			rec := parse.Parse(text, time.Now())
 			if rec.HasTime {
 				if havePrev {
@@ -176,10 +236,21 @@ func ForEachLine(path string, fn func(text string, at time.Time)) error {
 		return err
 	}
 	defer f.Close()
-	sc := newScanner(f)
+	return ForEachReader(f, fn)
+}
+
+// ForEachReader reads r to EOF, calling fn per line.
+func ForEachReader(r io.Reader, fn func(text string, at time.Time)) error {
+	lr := newLineReader(r)
 	now := time.Now()
-	for sc.Scan() {
-		fn(sc.Text(), now)
+	for {
+		text, err := lr.next()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		fn(text, now)
 	}
-	return sc.Err()
 }

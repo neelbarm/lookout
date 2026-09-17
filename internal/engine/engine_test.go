@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -201,5 +202,66 @@ func TestBlankLinesAreIgnored(t *testing.T) {
 	e.Feed("", now)
 	if e.Total() != 0 {
 		t.Errorf("blank lines counted: %d", e.Total())
+	}
+}
+
+// A line longer than the old 1 MB bufio.Scanner token limit used to end a
+// stream silently in the middle of a file and fail a report outright.
+func TestOverlongLineIsTruncatedNotFatal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.log")
+	var b []byte
+	b = append(b, "first line\n"...)
+	b = append(b, "huge "...)
+	b = append(b, bytes.Repeat([]byte("A"), 10<<20)...)
+	b = append(b, '\n')
+	b = append(b, "last line\n"...)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	if err := ForEachLine(path, func(text string, _ time.Time) {
+		got = append(got, text)
+	}); err != nil {
+		t.Fatalf("ForEachLine: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d lines, want 3 (the line after the huge one must survive)", len(got))
+	}
+	if got[0] != "first line" || got[2] != "last line" {
+		t.Errorf("lines around the huge one = %q, %q", got[0], got[2])
+	}
+	if len(got[1]) != MaxLine {
+		t.Errorf("huge line kept %d bytes, want it capped at %d", len(got[1]), MaxLine)
+	}
+
+	// The same file through the streaming source.
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	n := 0
+	for range ReaderSource(context.Background(), f) {
+		n++
+	}
+	if n != 3 {
+		t.Errorf("ReaderSource delivered %d lines, want 3", n)
+	}
+}
+
+// A final line with no trailing newline must still be delivered.
+func TestUnterminatedFinalLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-newline.log")
+	if err := os.WriteFile(path, []byte("one\ntwo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := ForEachLine(path, func(text string, _ time.Time) { got = append(got, text) }); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != "[one two]" {
+		t.Errorf("got %v, want [one two]", got)
 	}
 }

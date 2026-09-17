@@ -269,13 +269,9 @@ func runReport(ctx context.Context, o *opts, rest []string) error {
 	eng := engine.New(o.engineConfig())
 	src := "stdin"
 	if len(rest) == 0 || rest[0] == "-" {
-		sc := bufio.NewScanner(os.Stdin)
-		sc.Buffer(make([]byte, 64*1024), 1<<20)
-		now := time.Now()
-		for sc.Scan() {
-			eng.Feed(sc.Text(), now)
-		}
-		if err := sc.Err(); err != nil {
+		if err := engine.ForEachReader(os.Stdin, func(text string, at time.Time) {
+			eng.Feed(text, at)
+		}); err != nil {
 			return err
 		}
 	} else {
