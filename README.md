@@ -8,6 +8,8 @@ tail -f app.log | lookout
 
 ![lookout](docs/demo.png)
 
+![lookout in motion](docs/demo.gif)
+
 ## Why
 
 `grep ERROR` finds the errors you already knew to look for. It cannot tell you that a
