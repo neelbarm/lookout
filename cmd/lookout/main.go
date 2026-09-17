@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -108,17 +109,13 @@ func (o *opts) engineConfig() engine.Config {
 
 func main() {
 	args := os.Args[1:]
+	if text, ok := earlyExit(args); ok {
+		fmt.Print(text)
+		return
+	}
 	cmd := "stream"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
-	}
-	switch cmd {
-	case "help", "-h", "--help":
-		fmt.Print(usage)
-		return
-	case "version", "--version":
-		fmt.Println("lookout 1.0.0")
-		return
 	}
 
 	fs := flag.NewFlagSet("lookout", flag.ContinueOnError)
@@ -176,6 +173,25 @@ func main() {
 	}
 }
 
+const version = "lookout 1.0.0\n"
+
+// earlyExit matches help and version before the subcommand is split off. The
+// dashed spellings have to be handled here: the subcommand was only ever taken
+// from an argument that did not start with "-", so "lookout --version" fell
+// through to the flag parser and died with "flag provided but not defined".
+func earlyExit(args []string) (string, bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	switch args[0] {
+	case "help", "-h", "-help", "--help":
+		return usage, true
+	case "version", "-version", "--version":
+		return version, true
+	}
+	return "", false
+}
+
 // parseArgs parses flags that appear anywhere on the command line and returns
 // the operands. Go's flag package stops at the first non-flag argument, which
 // would silently ignore "lookout replay app.log --speed 50".
@@ -213,6 +229,19 @@ func runStream(ctx context.Context, o *opts, src <-chan engine.Event, name strin
 	return runJSON(ctx, o, eng, src)
 }
 
+// jsonSafe replaces values encoding/json cannot represent. Encode fails on
+// Inf and NaN and writes nothing at all, so an unrepresentable score would
+// drop the whole finding rather than degrade it.
+func jsonSafe(a detect.Anomaly) detect.Anomaly {
+	if math.IsInf(a.Score, 0) || math.IsNaN(a.Score) {
+		a.Score = 0
+	}
+	if math.IsInf(a.Value, 0) || math.IsNaN(a.Value) {
+		a.Value = 0
+	}
+	return a
+}
+
 // runJSON writes one JSON object per anomaly to stdout and a summary to stderr.
 func runJSON(ctx context.Context, o *opts, eng *engine.Engine, src <-chan engine.Event) error {
 	out := bufio.NewWriter(os.Stdout)
@@ -224,7 +253,7 @@ func runJSON(ctx context.Context, o *opts, eng *engine.Engine, src <-chan engine
 
 	emit := func(as []detect.Anomaly) {
 		for _, a := range as {
-			enc.Encode(a)
+			enc.Encode(jsonSafe(a))
 		}
 		if len(as) > 0 {
 			out.Flush()
